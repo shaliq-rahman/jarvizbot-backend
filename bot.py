@@ -1,19 +1,17 @@
-# bot.py (async + aiosqlite + WAL)
+# bot.py (async + PostgreSQL)
 import logging
 import re
 import os
-import sqlite3
 from datetime import date, timedelta
 from io import BytesIO
 from dateutil import parser as dateparser
-import aiosqlite
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, ContextTypes,
     MessageHandler, filters, ConversationHandler
 )
+import db_utils
 
-DB = "expenses.db"
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -24,39 +22,13 @@ bot_user_name="jarviz_money_control_bot"
 # Conversation states
 CAT, AMT, DTE, DESC = range(4)
 
-def init_db():
-    """Create DB and enable WAL - run once at startup (sync)."""
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-    cur.execute('PRAGMA journal_mode=WAL;')  # enable WAL for concurrent read/write
-    cur.execute('''
-    CREATE TABLE IF NOT EXISTS transactions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER,
-      category TEXT NOT NULL,
-      amount REAL NOT NULL,
-      currency TEXT DEFAULT 'INR',
-      date TEXT NOT NULL,
-      description TEXT,
-      tags TEXT,
-      created_at TEXT DEFAULT (datetime('now'))
-    );
-    ''')
-    conn.commit()
-    conn.close()
+async def init_db():
+    """Initialize PostgreSQL database - run once at startup."""
+    await db_utils.init_db()
 
 async def insert_tx(user_id, category, amount, date_str, description=None, tags=None, currency='INR'):
-    """Async insert using aiosqlite."""
-    async with aiosqlite.connect(DB) as db:
-        await db.execute('PRAGMA journal_mode=WAL;')
-        await db.execute(
-            '''
-            INSERT INTO transactions (user_id, category, amount, currency, date, description, tags)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''',
-            (user_id, category, amount, currency, date_str, description, tags)
-        )
-        await db.commit()
+    """Async insert using PostgreSQL."""
+    await db_utils.insert_tx(user_id, category, amount, date_str, description, tags, currency)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -142,7 +114,7 @@ async def quick_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await insert_tx(update.effective_user.id, category, amount, parsed_date.isoformat(), description=desc, tags=None)
     await update.message.reply_text(f"Saved: {category} {amount} on {parsed_date.isoformat()} ✅")
 
-# /list command (keeps using sync sqlite3 for simple read is fine, but use aiosqlite for consistency)
+# /list command
 async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = (update.message.text or "").split()
     n = 10
@@ -151,11 +123,7 @@ async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             n = int(parts[1])
         except:
             pass
-    rows = []
-    async with aiosqlite.connect(DB) as db:
-        await db.execute('PRAGMA journal_mode=WAL;')
-        cur = await db.execute('SELECT id, category, amount, date, description FROM transactions WHERE user_id=? ORDER BY date DESC, id DESC LIMIT ?', (update.effective_user.id, n))
-        rows = await cur.fetchall()
+    rows = await db_utils.get_transactions(update.effective_user.id, n)
     if not rows:
         await update.message.reply_text("No transactions yet.")
         return
@@ -180,14 +148,7 @@ async def summary_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         start = None
     else:
         start = today.replace(day=1).isoformat()
-    rows = []
-    async with aiosqlite.connect(DB) as db:
-        await db.execute('PRAGMA journal_mode=WAL;')
-        if start:
-            cur = await db.execute('SELECT category, SUM(amount) FROM transactions WHERE user_id=? AND date>=? GROUP BY category', (update.effective_user.id, start))
-        else:
-            cur = await db.execute('SELECT category, SUM(amount) FROM transactions WHERE user_id=? GROUP BY category', (update.effective_user.id,))
-        rows = await cur.fetchall()
+    rows = await db_utils.get_summary(update.effective_user.id, start)
     if not rows:
         await update.message.reply_text("No transactions for the selected period.")
         return
@@ -196,11 +157,7 @@ async def summary_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # /export CSV
 async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    rows = []
-    async with aiosqlite.connect(DB) as db:
-        await db.execute('PRAGMA journal_mode=WAL;')
-        cur = await db.execute('SELECT id, date, category, amount, currency, description FROM transactions WHERE user_id=? ORDER BY date', (update.effective_user.id,))
-        rows = await cur.fetchall()
+    rows = await db_utils.get_export_data(update.effective_user.id)
     if not rows:
         await update.message.reply_text("No data to export.")
         return
@@ -223,8 +180,8 @@ def get_token_from_file():
     except FileNotFoundError:
         return None
 
-def main():
-    init_db()
+async def main():
+    await init_db()
     TOKEN = os.getenv("BOT_TOKEN") or get_token_from_file() or "REPLACE_WITH_YOUR_BOT_TOKEN"
     if TOKEN == "REPLACE_WITH_YOUR_BOT_TOKEN":
         logger.error("Bot token not provided. Set BOT_TOKEN env var or put bot_token=... in credentials.txt")
@@ -248,7 +205,10 @@ def main():
     app.add_handler(CommandHandler("list", list_cmd))
     app.add_handler(CommandHandler("summary", summary_cmd))
     app.add_handler(CommandHandler("export", export_cmd))
+    
+    # Run the bot
     app.run_polling()
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())
