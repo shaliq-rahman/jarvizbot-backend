@@ -180,8 +180,11 @@ def get_token_from_file():
     except FileNotFoundError:
         return None
 
-async def main():
-    await init_db()
+def main():
+    # Initialize database before starting the bot
+    import asyncio
+    asyncio.run(init_db())
+    
     TOKEN = os.getenv("BOT_TOKEN") or get_token_from_file() or "REPLACE_WITH_YOUR_BOT_TOKEN"
     if TOKEN == "REPLACE_WITH_YOUR_BOT_TOKEN":
         logger.error("Bot token not provided. Set BOT_TOKEN env var or put bot_token=... in credentials.txt")
@@ -206,9 +209,8 @@ async def main():
     app.add_handler(CommandHandler("summary", summary_cmd))
     app.add_handler(CommandHandler("export", export_cmd))
     
-    # Run the bot
+    # Run the bot (this manages its own event loop)
     app.run_polling()
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    main()
