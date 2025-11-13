@@ -1,0 +1,12 @@
+# Copy these environment variables to Railway
+# Go to: Railway Dashboard → Your Project → Your Service → Variables Tab
+
+PGHOST=aws-1-ap-southeast-2.pooler.supabase.com
+PGPORT=5432
+PGDATABASE=postgres
+PGUSER=postgres.yzkbleuhvrhjabrpwlow
+PGPASSWORD=K14gKTz1NyHcrsFx
+PGSSLMODE=require
+
+# Optional: Bot Token (if not using credentials.txt)
+# BOT_TOKEN=your_telegram_bot_token_here
